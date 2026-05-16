@@ -5,23 +5,10 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -43,14 +30,19 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-private val Bg      = Color(0xFF0B0E15)
-private val Panel   = Color(0xFF171A23)
-private val Accent  = Color(0xFFFBBF24)
-private val Muted   = Color(0xFF94A3B8)
-private val Good    = Color(0xFF22C55E)
-private val Bad     = Color(0xFFEF4444)
-private val CardBg  = Color(0xFF1F2740)
-private val BlueBtn = Color(0xFF3B82F6)
+// ============ Theme colors ============
+
+internal val Bg      = Color(0xFF0B0E15)
+internal val Panel   = Color(0xFF171A23)
+internal val Accent  = Color(0xFFFBBF24)
+internal val Muted   = Color(0xFF94A3B8)
+internal val Good    = Color(0xFF22C55E)
+internal val Bad     = Color(0xFFEF4444)
+internal val CardBg  = Color(0xFF1F2740)
+internal val BlueBtn = Color(0xFF3B82F6)
+internal val Warning = Color(0xFFF59E0B)
+
+// ============ Activity ============
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -74,7 +66,17 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { Login, Pos, Admin }
+// ============ Top-level navigation tabs ============
+
+internal enum class TopTab(val title: String, val managerOnly: Boolean = false) {
+    Pos("קופה"),
+    Tabs("חשבונות"),
+    Voids("ביטולים"),
+    Sales("דוח מכירות", managerOnly = true),
+    Admin("ניהול", managerOnly = true),
+}
+
+// ============ Root composable ============
 
 @Composable
 private fun AppRoot() {
@@ -83,52 +85,103 @@ private fun AppRoot() {
         factory = ViewModelProvider.AndroidViewModelFactory.getInstance(app)
     )
     val state by vm.state.collectAsState()
-    var screen by remember { mutableStateOf(Screen.Login) }
+
+    if (state.activeEmployee == null) {
+        LoginScreen { emp -> vm.setActiveEmployee(emp) }
+        return
+    }
+
+    var topTab by remember { mutableStateOf(TopTab.Pos) }
+    val isManager = state.activeEmployee?.isManager == true
+    val tabs = TopTab.values().filter { !it.managerOnly || isManager }
 
     Scaffold(containerColor = Bg) { padding ->
-        Box(Modifier.padding(padding).fillMaxSize().background(Bg)) {
-            when (screen) {
-                Screen.Login -> LoginScreen { emp ->
-                    vm.setActiveEmployee(emp)
-                    screen = Screen.Pos
+        Column(Modifier.padding(padding).fillMaxSize().background(Bg)) {
+            // Top bar
+            Row(
+                Modifier.fillMaxWidth().background(Panel).padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    state.businessName.ifBlank { "BarPOS" },
+                    color = Accent, fontSize = 20.sp, fontWeight = FontWeight.Bold,
+                )
+                Spacer(Modifier.width(12.dp))
+                Text("שלום ${state.activeEmployee?.name ?: ""}", color = Muted, fontSize = 14.sp)
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "היום: ${formatMoney(state.todayTotal, state.currencySymbol)} (${state.todayCount})",
+                    color = Muted, fontSize = 13.sp,
+                )
+                Spacer(Modifier.width(12.dp))
+                IconButton(onClick = { vm.logout() }) {
+                    Icon(Icons.AutoMirrored.Filled.ExitToApp, contentDescription = "התנתק", tint = Muted)
                 }
-                Screen.Pos -> PosScreen(
-                    state = state,
-                    onAddItem = vm::addToCart,
-                    onRemoveLine = vm::removeLine,
-                    onClearCart = vm::clearCart,
-                    onCheckout = vm::checkout,
-                    onLogout = { vm.logout(); screen = Screen.Login },
-                    onAdmin = { screen = Screen.Admin },
-                )
-                Screen.Admin -> AdminScreen(
-                    state = state,
-                    onBack = { screen = Screen.Pos },
-                    onAddItem = vm::createItem,
-                    onDeleteItem = vm::deleteItem,
-                    onAddEmployee = vm::createEmployee,
-                    onDeleteEmployee = vm::deleteEmployee,
-                )
+            }
+
+            // Tab bar
+            TabRow(
+                selectedTabIndex = tabs.indexOf(topTab).coerceAtLeast(0),
+                containerColor = Panel,
+                contentColor = Accent,
+            ) {
+                tabs.forEach { t ->
+                    Tab(
+                        selected = topTab == t,
+                        onClick = { topTab = t },
+                        text = { Text(t.title, fontSize = 15.sp) },
+                    )
+                }
+            }
+
+            // Content
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                when (topTab) {
+                    TopTab.Pos   -> PosScreen(state = state, vm = vm)
+                    TopTab.Tabs  -> TabsScreen(state = state, vm = vm, openTab = { tabId ->
+                        if (state.workingTab?.id != tabId) {
+                            vm.openTabForEditing(tabId)
+                        }
+                        topTab = TopTab.Pos
+                    })
+                    TopTab.Voids -> VoidsScreen(state = state, vm = vm)
+                    TopTab.Sales -> SalesReportScreen(state = state, vm = vm)
+                    TopTab.Admin -> AdminScreen(state = state, vm = vm)
+                }
             }
         }
     }
 }
+
+// ============ State + ViewModel ============
 
 data class CartLine(val item: Item, val qty: Int)
 
 data class PosState(
     val items: List<Item> = emptyList(),
     val employees: List<Employee> = emptyList(),
-    val cart: List<CartLine> = emptyList(),
+    val cart: List<CartLine> = emptyList(),                 // for direct cash register
     val activeEmployee: Employee? = null,
     val todayTotal: Double = 0.0,
     val todayCount: Int = 0,
+    val openTabs: List<Tab> = emptyList(),
+    val workingTab: Tab? = null,                            // currently editing this tab
+    val workingTabItems: List<TabItem> = emptyList(),
+    val voidedTxs: List<Tx> = emptyList(),
+    val cancelledTabs: List<Tab> = emptyList(),
+    val voidedTabItems: List<TabItem> = emptyList(),
+    val recentTxs: List<Tx> = emptyList(),
+    val businessName: String = "BarPOS",
+    val taxRatePct: Double = 17.0,
+    val currencySymbol: String = "₪",
+    val taxIncluded: Boolean = true,
 )
 
 class PosViewModel(app: Application) : AndroidViewModel(app) {
     private val db = (app as BarPosApp).db
     private val _state = MutableStateFlow(PosState())
     val state: StateFlow<PosState> = _state
+    private var workingTabJob: kotlinx.coroutines.Job? = null
 
     init {
         viewModelScope.launch {
@@ -137,8 +190,46 @@ class PosViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         viewModelScope.launch {
-            db.employees().observeActive().collect { list ->
+            db.employees().observeAll().collect { list ->
                 _state.update { it.copy(employees = list) }
+            }
+        }
+        viewModelScope.launch {
+            db.tabs().observeOpen().collect { list ->
+                _state.update { it.copy(openTabs = list) }
+            }
+        }
+        viewModelScope.launch {
+            db.transactions().observeVoided().collect { list ->
+                _state.update { it.copy(voidedTxs = list) }
+            }
+        }
+        viewModelScope.launch {
+            db.tabs().observeCancelled().collect { list ->
+                _state.update { it.copy(cancelledTabs = list) }
+            }
+        }
+        viewModelScope.launch {
+            db.tabs().observeVoidedItems().collect { list ->
+                _state.update { it.copy(voidedTabItems = list) }
+            }
+        }
+        viewModelScope.launch {
+            db.transactions().observeRecent(200).collect { list ->
+                _state.update { it.copy(recentTxs = list) }
+            }
+        }
+        viewModelScope.launch {
+            db.settings().observeAll().collect { list ->
+                val map = list.associate { it.key to it.value }
+                _state.update {
+                    it.copy(
+                        businessName = map[SettingKeys.BUSINESS_NAME] ?: "BarPOS",
+                        taxRatePct = (map[SettingKeys.TAX_RATE] ?: "17").toDoubleOrNull() ?: 17.0,
+                        currencySymbol = map[SettingKeys.CURRENCY_SYMBOL] ?: "₪",
+                        taxIncluded = (map[SettingKeys.TAX_INCLUDED] ?: "true") == "true",
+                    )
+                }
             }
         }
         refreshTotals()
@@ -158,10 +249,35 @@ class PosViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun logout() {
-        _state.update { it.copy(activeEmployee = null, cart = emptyList()) }
+        workingTabJob?.cancel()
+        workingTabJob = null
+        _state.update {
+            it.copy(
+                activeEmployee = null,
+                cart = emptyList(),
+                workingTab = null,
+                workingTabItems = emptyList(),
+            )
+        }
     }
 
+    // ----- Cash register cart -----
+
     fun addToCart(item: Item) {
+        // If working on a tab, add to tab instead
+        val tab = _state.value.workingTab
+        if (tab != null) {
+            viewModelScope.launch {
+                db.tabs().insertItem(
+                    TabItem(
+                        tabId = tab.id, itemId = item.id, itemName = item.name,
+                        priceAtTime = item.price, quantity = 1,
+                    )
+                )
+                refreshWorkingTab()
+            }
+            return
+        }
         val cart = _state.value.cart.toMutableList()
         val idx = cart.indexOfFirst { it.item.id == item.id }
         if (idx >= 0) cart[idx] = cart[idx].copy(qty = cart[idx].qty + 1)
@@ -169,7 +285,7 @@ class PosViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(cart = cart) }
     }
 
-    fun removeLine(idx: Int) {
+    fun removeCartLine(idx: Int) {
         val cart = _state.value.cart.toMutableList()
         if (idx in cart.indices) cart.removeAt(idx)
         _state.update { it.copy(cart = cart) }
@@ -177,7 +293,7 @@ class PosViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearCart() { _state.update { it.copy(cart = emptyList()) } }
 
-    fun checkout(method: String) {
+    fun checkoutCart(method: String) {
         val cart = _state.value.cart
         val emp = _state.value.activeEmployee ?: return
         if (cart.isEmpty()) return
@@ -198,22 +314,182 @@ class PosViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ----- Tabs -----
+
+    fun openTabForEditing(tabId: Long) {
+        viewModelScope.launch {
+            val tab = db.tabs().get(tabId) ?: return@launch
+            workingTabJob?.cancel()
+            _state.update { it.copy(workingTab = tab, cart = emptyList()) }
+            refreshWorkingTab()
+            workingTabJob = viewModelScope.launch {
+                db.tabs().observeItems(tabId).collect { items ->
+                    if (_state.value.workingTab?.id == tabId) {
+                        _state.update { it.copy(workingTabItems = items) }
+                    }
+                }
+            }
+        }
+    }
+
+    fun closeWorkingTabView() {
+        workingTabJob?.cancel()
+        workingTabJob = null
+        _state.update { it.copy(workingTab = null, workingTabItems = emptyList()) }
+    }
+
+    private suspend fun refreshWorkingTab() {
+        val tab = _state.value.workingTab ?: return
+        val items = db.tabs().activeItemsFor(tab.id)
+        _state.update { it.copy(workingTabItems = items) }
+    }
+
+    fun createTab(name: String, customerName: String?) {
+        val emp = _state.value.activeEmployee ?: return
+        viewModelScope.launch {
+            val id = db.tabs().insert(
+                Tab(
+                    name = name.ifBlank { "אורח" },
+                    customerName = customerName,
+                    createdByEmployeeId = emp.id,
+                )
+            )
+            openTabForEditing(id)
+        }
+    }
+
+    fun voidTabItem(itemId: Long, reason: String?) {
+        viewModelScope.launch {
+            db.tabs().voidItem(itemId, System.currentTimeMillis(), reason)
+            refreshWorkingTab()
+        }
+    }
+
+    fun cancelTab(tabId: Long, reason: String?) {
+        viewModelScope.launch {
+            db.tabs().cancelTab(tabId, System.currentTimeMillis(), reason)
+            if (_state.value.workingTab?.id == tabId) {
+                _state.update { it.copy(workingTab = null, workingTabItems = emptyList()) }
+            }
+        }
+    }
+
+    fun closeTab(tabId: Long, paymentMethod: String) {
+        val emp = _state.value.activeEmployee ?: return
+        viewModelScope.launch {
+            val items = db.tabs().activeItemsFor(tabId)
+            if (items.isEmpty()) return@launch
+            val total = items.sumOf { it.priceAtTime * it.quantity }
+            val txId = db.transactions().insertTx(
+                Tx(total = total, paymentMethod = paymentMethod,
+                   employeeId = emp.id, tabId = tabId)
+            )
+            db.transactions().insertItems(items.map { it ->
+                TxItem(
+                    transactionId = txId, itemId = it.itemId,
+                    itemName = it.itemName, priceAtTime = it.priceAtTime,
+                    quantity = it.quantity,
+                )
+            })
+            db.tabs().closeTab(tabId, System.currentTimeMillis())
+            if (_state.value.workingTab?.id == tabId) {
+                _state.update { it.copy(workingTab = null, workingTabItems = emptyList()) }
+            }
+            refreshTotals()
+        }
+    }
+
+    // ----- Voids -----
+
+    fun voidTransaction(txId: Long, reason: String) {
+        viewModelScope.launch {
+            db.transactions().voidTx(txId, System.currentTimeMillis(), reason)
+            refreshTotals()
+        }
+    }
+
+    // ----- Admin -----
+
     fun createItem(name: String, price: Double, category: String) {
         viewModelScope.launch {
             db.items().insert(Item(name = name, price = price, category = category, active = true))
         }
     }
 
+    fun updateItem(item: Item) {
+        viewModelScope.launch { db.items().update(item) }
+    }
+
     fun deleteItem(id: Long) { viewModelScope.launch { db.items().softDelete(id) } }
 
     fun createEmployee(name: String, pin: String, isManager: Boolean) {
         viewModelScope.launch {
-            db.employees().insert(Employee(name = name, pin = pin, isManager = isManager, active = true))
+            db.employees().insert(Employee(name = name, pin = pin,
+                                           isManager = isManager, active = true))
         }
     }
 
+    fun updateEmployee(emp: Employee) {
+        viewModelScope.launch { db.employees().update(emp) }
+    }
+
     fun deleteEmployee(id: Long) { viewModelScope.launch { db.employees().softDelete(id) } }
+
+    fun saveBusinessSettings(name: String, taxPct: Double, currency: String, taxIncluded: Boolean) {
+        viewModelScope.launch {
+            db.settings().put(Setting(SettingKeys.BUSINESS_NAME, name))
+            db.settings().put(Setting(SettingKeys.TAX_RATE, taxPct.toString()))
+            db.settings().put(Setting(SettingKeys.CURRENCY_SYMBOL, currency))
+            db.settings().put(Setting(SettingKeys.TAX_INCLUDED, taxIncluded.toString()))
+        }
+    }
+
+    // ----- Sales report -----
+
+    suspend fun salesInRange(sinceMs: Long, untilMs: Long): SalesReportData {
+        val txs = db.transactions().listInRange(sinceMs, untilMs)
+        val items = if (txs.isNotEmpty()) {
+            db.transactions().itemsForAll(txs.map { it.id })
+        } else emptyList()
+        val byEmp = txs.groupBy { it.employeeId }
+            .mapValues { e -> e.value.sumOf { it.total } }
+        val byMethod = txs.groupBy { it.paymentMethod }
+            .mapValues { e -> e.value.sumOf { it.total } }
+        val byCategory = items.groupBy { txItemCategory(it) }
+            .mapValues { e -> e.value.sumOf { it.priceAtTime * it.quantity } }
+        val topItems = items.groupBy { it.itemName }
+            .map { (name, list) ->
+                Triple(name, list.sumOf { it.quantity },
+                       list.sumOf { it.priceAtTime * it.quantity })
+            }
+            .sortedByDescending { it.third }
+            .take(20)
+        return SalesReportData(
+            txCount = txs.size,
+            totalSales = txs.sumOf { it.total },
+            byEmployee = byEmp,
+            byMethod = byMethod,
+            byCategory = byCategory,
+            topItems = topItems,
+        )
+    }
+
+    private fun txItemCategory(it: TxItem): String {
+        val cat = _state.value.items.firstOrNull { i -> i.id == it.itemId }?.category
+        return cat ?: "ללא קטגוריה"
+    }
 }
+
+data class SalesReportData(
+    val txCount: Int,
+    val totalSales: Double,
+    val byEmployee: Map<Long, Double>,
+    val byMethod: Map<String, Double>,
+    val byCategory: Map<String, Double>,
+    val topItems: List<Triple<String, Int, Double>>,
+)
+
+// ============ Login ============
 
 @Composable
 private fun LoginScreen(onLoggedIn: (Employee) -> Unit) {
@@ -289,7 +565,7 @@ private fun LoginScreen(onLoggedIn: (Employee) -> Unit) {
 }
 
 @Composable
-private fun NumPad(onDigit: (String) -> Unit, onBack: () -> Unit, onOk: () -> Unit) {
+internal fun NumPad(onDigit: (String) -> Unit, onBack: () -> Unit, onOk: () -> Unit) {
     val rows = listOf(
         listOf("1", "2", "3"),
         listOf("4", "5", "6"),
@@ -317,8 +593,7 @@ private fun NumPad(onDigit: (String) -> Unit, onBack: () -> Unit, onOk: () -> Un
                         shape = RoundedCornerShape(10.dp),
                     ) {
                         Text(
-                            text = ch,
-                            fontSize = 22.sp,
+                            text = ch, fontSize = 22.sp,
                             color = if (ch == "→") Color.Black else Color.White,
                         )
                     }
@@ -328,403 +603,43 @@ private fun NumPad(onDigit: (String) -> Unit, onBack: () -> Unit, onOk: () -> Un
     }
 }
 
-@Composable
-private fun PosScreen(
-    state: PosState,
-    onAddItem: (Item) -> Unit,
-    onRemoveLine: (Int) -> Unit,
-    onClearCart: () -> Unit,
-    onCheckout: (String) -> Unit,
-    onLogout: () -> Unit,
-    onAdmin: () -> Unit,
-) {
-    val activeItems = remember(state.items) { state.items.filter { it.active } }
-    val categories = remember(activeItems) {
-        listOf<String?>(null) + activeItems.map { it.category }.distinct().sorted()
-    }
-    var category by remember { mutableStateOf<String?>(null) }
-    val visibleItems = remember(activeItems, category) {
-        if (category == null) activeItems else activeItems.filter { it.category == category }
-    }
-    val cartTotal = state.cart.sumOf { it.item.price * it.qty }
-    val cartCount = state.cart.sumOf { it.qty }
+// ============ Helpers ============
 
-    Row(Modifier.fillMaxSize()) {
-        Column(Modifier.weight(1f).padding(12.dp)) {
-            Row(
-                Modifier.fillMaxWidth().padding(bottom = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("BarPOS", color = Accent, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.width(12.dp))
-                Text("שלום ${state.activeEmployee?.name ?: ""}",
-                     color = Muted, fontSize = 14.sp)
-                Spacer(Modifier.weight(1f))
-                Text(
-                    "היום: ${formatMoney(state.todayTotal)} (${state.todayCount} עסקאות)",
-                    color = Muted, fontSize = 13.sp,
-                )
-                Spacer(Modifier.width(12.dp))
-                if (state.activeEmployee?.isManager == true) {
-                    IconButton(onClick = onAdmin) {
-                        Icon(Icons.Filled.Settings, contentDescription = "ניהול", tint = Muted)
-                    }
-                }
-                IconButton(onClick = onLogout) {
-                    Icon(Icons.AutoMirrored.Filled.ExitToApp, contentDescription = "התנתק", tint = Muted)
-                }
-            }
+internal fun formatMoney(d: Double, currency: String = "₪"): String =
+    "$currency%.2f".format(d)
 
-            Row(
-                modifier = Modifier
-                    .horizontalScroll(rememberScrollState())
-                    .padding(bottom = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                categories.forEach { c ->
-                    val active = c == category
-                    Button(
-                        onClick = { category = c },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (active) Accent else CardBg
-                        ),
-                        shape = RoundedCornerShape(8.dp),
-                    ) {
-                        Text(c ?: "הכל", color = if (active) Color.Black else Color.White)
-                    }
-                }
-            }
-
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 140.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                items(visibleItems, key = { it.id }) { item ->
-                    Card(
-                        modifier = Modifier
-                            .height(96.dp).fillMaxWidth()
-                            .clickable { onAddItem(item) },
-                        colors = CardDefaults.cardColors(containerColor = CardBg),
-                        shape = RoundedCornerShape(10.dp),
-                    ) {
-                        Column(
-                            modifier = Modifier.fillMaxSize().padding(8.dp),
-                            verticalArrangement = Arrangement.SpaceBetween,
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                        ) {
-                            Text(
-                                item.name,
-                                color = Color.White, fontSize = 14.sp,
-                                textAlign = TextAlign.Center,
-                                fontWeight = FontWeight.Medium,
-                            )
-                            Text(
-                                formatMoney(item.price),
-                                color = Accent, fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        Column(
-            Modifier
-                .width(360.dp).fillMaxHeight()
-                .background(Panel).padding(14.dp)
-        ) {
-            Text(
-                "חשבון נוכחי",
-                color = Color.White, fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(bottom = 8.dp),
-            )
-
-            Box(Modifier.weight(1f).fillMaxWidth()) {
-                if (state.cart.isEmpty()) {
-                    Text(
-                        "החשבון ריק. בחר פריטים מהרשימה.",
-                        color = Muted, fontSize = 14.sp,
-                        modifier = Modifier.align(Alignment.Center),
-                    )
-                } else {
-                    LazyColumn {
-                        itemsIndexed(state.cart) { idx, line ->
-                            CartLineRow(line) { onRemoveLine(idx) }
-                            HorizontalDivider(color = CardBg)
-                        }
-                    }
-                }
-            }
-
-            HorizontalDivider(
-                color = CardBg, thickness = 2.dp,
-                modifier = Modifier.padding(vertical = 8.dp),
-            )
-
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("פריטים", color = Muted)
-                Text("$cartCount", color = Color.White)
-            }
-            Row(
-                Modifier.fillMaxWidth().padding(top = 4.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("סה״כ", color = Color.White, fontSize = 18.sp)
-                Text(
-                    formatMoney(cartTotal),
-                    color = Accent, fontSize = 26.sp,
-                    fontWeight = FontWeight.Bold,
-                )
-            }
-
-            Spacer(Modifier.height(10.dp))
-
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Button(
-                    onClick = { onCheckout("cash") },
-                    enabled = state.cart.isNotEmpty(),
-                    colors = ButtonDefaults.buttonColors(containerColor = Good),
-                    modifier = Modifier.weight(1f).height(56.dp),
-                    shape = RoundedCornerShape(10.dp),
-                ) {
-                    Text("מזומן", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                }
-                Button(
-                    onClick = { onCheckout("credit") },
-                    enabled = state.cart.isNotEmpty(),
-                    colors = ButtonDefaults.buttonColors(containerColor = BlueBtn),
-                    modifier = Modifier.weight(1f).height(56.dp),
-                    shape = RoundedCornerShape(10.dp),
-                ) {
-                    Text("אשראי", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                }
-            }
-            Button(
-                onClick = onClearCart,
-                enabled = state.cart.isNotEmpty(),
-                colors = ButtonDefaults.buttonColors(containerColor = CardBg),
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp).height(44.dp),
-                shape = RoundedCornerShape(10.dp),
-            ) {
-                Text("נקה חשבון", color = Color.White)
-            }
-        }
-    }
-}
-
-@Composable
-private fun CartLineRow(line: CartLine, onRemove: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().padding(vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(line.item.name, color = Color.White, fontSize = 14.sp)
-            Text(
-                "${line.qty} × ${formatMoney(line.item.price)}",
-                color = Muted, fontSize = 12.sp,
-            )
-        }
-        Text(
-            formatMoney(line.item.price * line.qty),
-            color = Accent, fontSize = 14.sp, fontWeight = FontWeight.Bold,
-        )
-        IconButton(onClick = onRemove) {
-            Icon(Icons.Filled.Close, contentDescription = "הסר", tint = Bad)
-        }
-    }
-}
-
-@Composable
-private fun AdminScreen(
-    state: PosState,
-    onBack: () -> Unit,
-    onAddItem: (String, Double, String) -> Unit,
-    onDeleteItem: (Long) -> Unit,
-    onAddEmployee: (String, String, Boolean) -> Unit,
-    onDeleteEmployee: (Long) -> Unit,
-) {
-    var showAddItem by remember { mutableStateOf(false) }
-    var showAddEmp by remember { mutableStateOf(false) }
-    var tab by remember { mutableStateOf(0) }
-    val tabs = listOf("מוצרים", "עובדים")
-
-    Column(Modifier.fillMaxSize().padding(12.dp).verticalScroll(rememberScrollState())) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "חזרה",
-                     tint = Color.White)
-            }
-            Text("ניהול", color = Accent, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-        }
-
-        TabRow(selectedTabIndex = tab, containerColor = Bg, contentColor = Accent) {
-            tabs.forEachIndexed { i, t ->
-                Tab(selected = tab == i, onClick = { tab = i }, text = { Text(t) })
-            }
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        when (tab) {
-            0 -> {
-                Button(
-                    onClick = { showAddItem = true },
-                    colors = ButtonDefaults.buttonColors(containerColor = Accent),
-                    shape = RoundedCornerShape(8.dp),
-                ) { Text("+ הוסף מוצר", color = Color.Black) }
-
-                Spacer(Modifier.height(10.dp))
-                state.items.forEach { item ->
-                    Row(
-                        Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                item.name + if (!item.active) " (לא פעיל)" else "",
-                                color = if (item.active) Color.White else Muted,
-                            )
-                            Text(item.category, color = Muted, fontSize = 12.sp)
-                        }
-                        Text(
-                            formatMoney(item.price), color = Accent,
-                            modifier = Modifier.padding(end = 12.dp),
-                        )
-                        if (item.active) {
-                            IconButton(onClick = { onDeleteItem(item.id) }) {
-                                Icon(Icons.Filled.Delete, contentDescription = "מחק", tint = Bad)
-                            }
-                        }
-                    }
-                    HorizontalDivider(color = CardBg)
-                }
-            }
-            1 -> {
-                Button(
-                    onClick = { showAddEmp = true },
-                    colors = ButtonDefaults.buttonColors(containerColor = Accent),
-                    shape = RoundedCornerShape(8.dp),
-                ) { Text("+ הוסף עובד", color = Color.Black) }
-
-                Spacer(Modifier.height(10.dp))
-                state.employees.forEach { e ->
-                    Row(
-                        Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                e.name + if (e.isManager) " (מנהל)" else "",
-                                color = Color.White,
-                            )
-                            Text("PIN: ${e.pin}", color = Muted, fontSize = 12.sp)
-                        }
-                        IconButton(onClick = { onDeleteEmployee(e.id) }) {
-                            Icon(Icons.Filled.Delete, contentDescription = "מחק", tint = Bad)
-                        }
-                    }
-                    HorizontalDivider(color = CardBg)
-                }
-            }
-        }
-    }
-
-    if (showAddItem) {
-        AddItemDialog(
-            onDismiss = { showAddItem = false },
-            onSave = { name, price, cat ->
-                onAddItem(name, price, cat)
-                showAddItem = false
-            },
-        )
-    }
-    if (showAddEmp) {
-        AddEmployeeDialog(
-            onDismiss = { showAddEmp = false },
-            onSave = { name, pin, isMgr ->
-                onAddEmployee(name, pin, isMgr)
-                showAddEmp = false
-            },
-        )
-    }
-}
-
-@Composable
-private fun AddItemDialog(onDismiss: () -> Unit, onSave: (String, Double, String) -> Unit) {
-    var name by remember { mutableStateOf("") }
-    var price by remember { mutableStateOf("") }
-    var category by remember { mutableStateOf("כללי") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("מוצר חדש") },
-        text = {
-            Column {
-                OutlinedTextField(name, { name = it }, label = { Text("שם") },
-                                  modifier = Modifier.fillMaxWidth(), singleLine = true)
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(price, { price = it }, label = { Text("מחיר") },
-                                  modifier = Modifier.fillMaxWidth(), singleLine = true)
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(category, { category = it }, label = { Text("קטגוריה") },
-                                  modifier = Modifier.fillMaxWidth(), singleLine = true)
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                val p = price.toDoubleOrNull() ?: return@TextButton
-                if (name.isNotBlank()) onSave(name, p, category.ifBlank { "כללי" })
-            }) { Text("שמור") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("ביטול") } },
-    )
-}
-
-@Composable
-private fun AddEmployeeDialog(onDismiss: () -> Unit, onSave: (String, String, Boolean) -> Unit) {
-    var name by remember { mutableStateOf("") }
-    var pin by remember { mutableStateOf("") }
-    var isMgr by remember { mutableStateOf(false) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("עובד חדש") },
-        text = {
-            Column {
-                OutlinedTextField(name, { name = it }, label = { Text("שם") },
-                                  modifier = Modifier.fillMaxWidth(), singleLine = true)
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(pin, { pin = it }, label = { Text("קוד PIN") },
-                                  modifier = Modifier.fillMaxWidth(), singleLine = true)
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(isMgr, { isMgr = it })
-                    Text("מנהל", color = Color.White)
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                if (name.isNotBlank() && pin.isNotBlank()) onSave(name, pin, isMgr)
-            }) { Text("שמור") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("ביטול") } },
-    )
-}
-
-private fun formatMoney(d: Double): String = "₪%.2f".format(d)
-
-private fun startOfDayMillis(): Long {
+internal fun startOfDayMillis(at: Long = System.currentTimeMillis()): Long {
     val cal = java.util.Calendar.getInstance()
+    cal.timeInMillis = at
     cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
     cal.set(java.util.Calendar.MINUTE, 0)
     cal.set(java.util.Calendar.SECOND, 0)
     cal.set(java.util.Calendar.MILLISECOND, 0)
     return cal.timeInMillis
+}
+
+internal fun startOfDayAddingDays(days: Int): Long {
+    val cal = java.util.Calendar.getInstance()
+    cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
+    cal.set(java.util.Calendar.MINUTE, 0)
+    cal.set(java.util.Calendar.SECOND, 0)
+    cal.set(java.util.Calendar.MILLISECOND, 0)
+    cal.add(java.util.Calendar.DAY_OF_YEAR, days)
+    return cal.timeInMillis
+}
+
+internal fun formatDateTime(ms: Long): String {
+    val sdf = java.text.SimpleDateFormat("dd/MM/yyyy HH:mm", java.util.Locale("he", "IL"))
+    return sdf.format(java.util.Date(ms))
+}
+
+internal fun formatDate(ms: Long): String {
+    val sdf = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale("he", "IL"))
+    return sdf.format(java.util.Date(ms))
+}
+
+internal fun paymentMethodLabel(method: String): String = when (method) {
+    "cash" -> "מזומן"
+    "credit" -> "אשראי"
+    else -> method
 }
