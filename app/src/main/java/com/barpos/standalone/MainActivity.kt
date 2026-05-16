@@ -10,6 +10,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material3.*
+import androidx.compose.material3.Tab as M3Tab
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -126,7 +127,7 @@ private fun AppRoot() {
                 contentColor = Accent,
             ) {
                 tabs.forEach { t ->
-                    Tab(
+                    M3Tab(
                         selected = topTab == t,
                         onClick = { topTab = t },
                         text = { Text(t.title, fontSize = 15.sp) },

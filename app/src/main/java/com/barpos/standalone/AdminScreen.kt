@@ -8,6 +8,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.*
+import androidx.compose.material3.Tab as M3Tab
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -28,7 +29,7 @@ internal fun AdminScreen(state: PosState, vm: PosViewModel) {
 
         TabRow(selectedTabIndex = tab, containerColor = Panel, contentColor = Accent) {
             tabs.forEachIndexed { i, t ->
-                Tab(selected = tab == i, onClick = { tab = i }, text = { Text(t) })
+                M3Tab(selected = tab == i, onClick = { tab = i }, text = { Text(t) })
             }
         }
 
