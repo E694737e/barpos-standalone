@@ -13,6 +13,10 @@ data class Item(
     val price: Double,
     val category: String = "כללי",
     val active: Boolean = true,
+    val unit: String = "יח׳",
+    val stockOnHand: Double = 0.0,
+    val lowStockThreshold: Double = 0.0,
+    val trackStock: Boolean = false,
 )
 
 @Entity(tableName = "employees")
@@ -27,15 +31,21 @@ data class Employee(
 @Entity(tableName = "transactions")
 data class Tx(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val total: Double,
+    val total: Double,                  // total charged (subtotal + tip)
+    val subtotal: Double = 0.0,         // amount before tip
+    val tip: Double = 0.0,              // tip amount
+    val tax: Double = 0.0,              // tax amount (if tax not included in prices)
     val paymentMethod: String,
+    val cashReceived: Double = 0.0,     // for cash payments
+    val changeGiven: Double = 0.0,
     val employeeId: Long,
     val createdAt: Long = System.currentTimeMillis(),
-    // New for voiding support
-    val status: String = "completed",   // completed | voided
+    val status: String = "completed",   // completed | voided | refunded
     val voidedAt: Long? = null,
     val voidReason: String? = null,
-    val tabId: Long? = null,            // null = direct cash register sale
+    val tabId: Long? = null,
+    val refundOfTxId: Long? = null,     // if this Tx is a refund of another
+    val refundReason: String? = null,
 )
 
 @Entity(tableName = "transaction_items")
@@ -51,11 +61,11 @@ data class TxItem(
 @Entity(tableName = "tabs")
 data class Tab(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val name: String,                   // table name / customer name
+    val name: String,
     val customerName: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
     val closedAt: Long? = null,
-    val status: String = "open",        // open | closed | cancelled
+    val status: String = "open",
     val cancelReason: String? = null,
     val createdByEmployeeId: Long,
 )
@@ -78,6 +88,39 @@ data class TabItem(
 data class Setting(
     @PrimaryKey val key: String,
     val value: String,
+)
+
+@Entity(tableName = "stock_movements")
+data class StockMovement(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val itemId: Long,
+    val itemName: String,
+    val change: Double,                 // positive for restock, negative for usage
+    val reason: String,                 // "restock", "sale", "adjust", "void"
+    val note: String? = null,
+    val employeeId: Long? = null,
+    val createdAt: Long = System.currentTimeMillis(),
+)
+
+@Entity(tableName = "events")
+data class Event(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val name: String,
+    val description: String? = null,
+    val startedAt: Long = System.currentTimeMillis(),
+    val endedAt: Long? = null,
+    val status: String = "active",      // active | ended | cancelled
+    val createdByEmployeeId: Long,
+)
+
+@Entity(tableName = "event_stock_snapshots")
+data class EventStockSnapshot(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val eventId: Long,
+    val itemId: Long,
+    val itemName: String,
+    val unit: String,
+    val initialQty: Double,
 )
 
 // ============ DAOs ============
@@ -104,6 +147,12 @@ interface ItemDao {
 
     @Query("SELECT COUNT(*) FROM items")
     suspend fun count(): Int
+
+    @Query("UPDATE items SET stockOnHand = stockOnHand + :delta WHERE id = :id AND trackStock = 1")
+    suspend fun adjustStock(id: Long, delta: Double)
+
+    @Query("UPDATE items SET stockOnHand = :qty WHERE id = :id")
+    suspend fun setStock(id: Long, qty: Double)
 }
 
 @Dao
@@ -149,6 +198,12 @@ interface TxDao {
 
     @Query("SELECT * FROM transactions WHERE status = 'voided' ORDER BY voidedAt DESC")
     fun observeVoided(): Flow<List<Tx>>
+
+    @Query("SELECT * FROM transactions WHERE refundOfTxId IS NOT NULL ORDER BY createdAt DESC")
+    fun observeRefunds(): Flow<List<Tx>>
+
+    @Query("SELECT * FROM transactions WHERE status = 'completed' AND refundOfTxId IS NULL ORDER BY createdAt DESC LIMIT :limit")
+    fun observeCompleted(limit: Int = 200): Flow<List<Tx>>
 
     @Query("SELECT COALESCE(SUM(total), 0) FROM transactions WHERE status = 'completed' AND createdAt >= :since")
     suspend fun sumSince(since: Long): Double
@@ -201,7 +256,6 @@ interface TabDao {
     @Query("UPDATE tabs SET status = 'cancelled', closedAt = :ts, cancelReason = :reason WHERE id = :id")
     suspend fun cancelTab(id: Long, ts: Long, reason: String?)
 
-    // Tab items
     @Query("SELECT * FROM tab_items WHERE tabId = :tabId ORDER BY addedAt ASC")
     fun observeItems(tabId: Long): Flow<List<TabItem>>
 
@@ -233,19 +287,57 @@ interface SettingsDao {
     suspend fun count(): Int
 }
 
+@Dao
+interface StockDao {
+    @Insert
+    suspend fun insertMovement(movement: StockMovement): Long
+
+    @Query("SELECT * FROM stock_movements ORDER BY createdAt DESC LIMIT :limit")
+    fun observeRecent(limit: Int = 200): Flow<List<StockMovement>>
+
+    @Query("SELECT * FROM stock_movements WHERE itemId = :itemId ORDER BY createdAt DESC")
+    fun observeForItem(itemId: Long): Flow<List<StockMovement>>
+}
+
+@Dao
+interface EventDao {
+    @Query("SELECT * FROM events WHERE status = 'active' LIMIT 1")
+    fun observeActive(): Flow<Event?>
+
+    @Query("SELECT * FROM events ORDER BY startedAt DESC LIMIT :limit")
+    fun observeAll(limit: Int = 100): Flow<List<Event>>
+
+    @Query("SELECT * FROM events WHERE id = :id")
+    suspend fun get(id: Long): Event?
+
+    @Insert
+    suspend fun insert(e: Event): Long
+
+    @Update
+    suspend fun update(e: Event)
+
+    @Query("UPDATE events SET status = 'ended', endedAt = :ts WHERE id = :id")
+    suspend fun endEvent(id: Long, ts: Long)
+
+    @Insert
+    suspend fun insertSnapshot(s: EventStockSnapshot): Long
+
+    @Query("SELECT * FROM event_stock_snapshots WHERE eventId = :eventId")
+    suspend fun snapshotsFor(eventId: Long): List<EventStockSnapshot>
+
+    @Query("SELECT * FROM event_stock_snapshots WHERE eventId = :eventId")
+    fun observeSnapshotsFor(eventId: Long): Flow<List<EventStockSnapshot>>
+}
+
 // ============ Database ============
 
 @Database(
     entities = [
-        Item::class,
-        Employee::class,
-        Tx::class,
-        TxItem::class,
-        Tab::class,
-        TabItem::class,
-        Setting::class,
+        Item::class, Employee::class, Tx::class, TxItem::class,
+        Tab::class, TabItem::class, Setting::class,
+        StockMovement::class, Event::class, EventStockSnapshot::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -254,6 +346,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun transactions(): TxDao
     abstract fun tabs(): TabDao
     abstract fun settings(): SettingsDao
+    abstract fun stockMovements(): StockDao
+    abstract fun events(): EventDao
 
     companion object {
         @Volatile private var INSTANCE: AppDatabase? = null
@@ -277,7 +371,14 @@ abstract class AppDatabase : RoomDatabase() {
 
 object SettingKeys {
     const val BUSINESS_NAME = "business_name"
-    const val TAX_RATE = "tax_rate"            // percent as string e.g. "17"
+    const val BUSINESS_ADDRESS = "business_address"
+    const val BUSINESS_PHONE = "business_phone"
+    const val BUSINESS_TAX_ID = "business_tax_id"   // ע.מ. או ע.ר. או ח.פ.
+    const val TAX_RATE = "tax_rate"
     const val CURRENCY_SYMBOL = "currency_symbol"
-    const val TAX_INCLUDED = "tax_included"     // "true" or "false"
+    const val TAX_INCLUDED = "tax_included"
+    const val SHOW_CLOCK = "show_clock"
+    const val RECEIPT_FOOTER = "receipt_footer"
+    const val DEFAULT_UNIT = "default_unit"
+    const val LOW_STOCK_THRESHOLD = "low_stock_threshold"
 }

@@ -26,6 +26,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -73,7 +74,10 @@ internal enum class TopTab(val title: String, val managerOnly: Boolean = false) 
     Pos("קופה"),
     Tabs("חשבונות"),
     Voids("ביטולים"),
-    Sales("דוח מכירות", managerOnly = true),
+    Refunds("זיכויים"),
+    Sales("דוחות", managerOnly = true),
+    Stock("מלאי", managerOnly = true),
+    Events("אירועים", managerOnly = true),
     Admin("ניהול", managerOnly = true),
 }
 
@@ -96,9 +100,19 @@ private fun AppRoot() {
     val isManager = state.activeEmployee?.isManager == true
     val tabs = TopTab.values().filter { !it.managerOnly || isManager }
 
+    // Live clock
+    var clockText by remember { mutableStateOf(currentTimeText()) }
+    if (state.showClock) {
+        LaunchedEffect(Unit) {
+            while (true) {
+                clockText = currentTimeText()
+                delay(1000)
+            }
+        }
+    }
+
     Scaffold(containerColor = Bg) { padding ->
         Column(Modifier.padding(padding).fillMaxSize().background(Bg)) {
-            // Top bar
             Row(
                 Modifier.fillMaxWidth().background(Panel).padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -110,6 +124,11 @@ private fun AppRoot() {
                 Spacer(Modifier.width(12.dp))
                 Text("שלום ${state.activeEmployee?.name ?: ""}", color = Muted, fontSize = 14.sp)
                 Spacer(Modifier.weight(1f))
+                if (state.showClock) {
+                    Text(clockText, color = Color.White, fontSize = 14.sp,
+                         fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.width(12.dp))
+                }
                 Text(
                     "היום: ${formatMoney(state.todayTotal, state.currencySymbol)} (${state.todayCount})",
                     color = Muted, fontSize = 13.sp,
@@ -120,22 +139,21 @@ private fun AppRoot() {
                 }
             }
 
-            // Tab bar
-            TabRow(
+            ScrollableTabRow(
                 selectedTabIndex = tabs.indexOf(topTab).coerceAtLeast(0),
                 containerColor = Panel,
                 contentColor = Accent,
+                edgePadding = 0.dp,
             ) {
                 tabs.forEach { t ->
                     M3Tab(
                         selected = topTab == t,
                         onClick = { topTab = t },
-                        text = { Text(t.title, fontSize = 15.sp) },
+                        text = { Text(t.title, fontSize = 14.sp) },
                     )
                 }
             }
 
-            // Content
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (topTab) {
                     TopTab.Pos   -> PosScreen(state = state, vm = vm)
@@ -145,9 +163,12 @@ private fun AppRoot() {
                         }
                         topTab = TopTab.Pos
                     })
-                    TopTab.Voids -> VoidsScreen(state = state, vm = vm)
-                    TopTab.Sales -> SalesReportScreen(state = state, vm = vm)
-                    TopTab.Admin -> AdminScreen(state = state, vm = vm)
+                    TopTab.Voids   -> VoidsScreen(state = state, vm = vm)
+                    TopTab.Refunds -> RefundsScreen(state = state, vm = vm)
+                    TopTab.Sales   -> SalesReportScreen(state = state, vm = vm)
+                    TopTab.Stock   -> StockScreen(state = state, vm = vm)
+                    TopTab.Events  -> EventsScreen(state = state, vm = vm)
+                    TopTab.Admin   -> AdminScreen(state = state, vm = vm)
                 }
             }
         }
@@ -161,25 +182,40 @@ data class CartLine(val item: Item, val qty: Int)
 data class PosState(
     val items: List<Item> = emptyList(),
     val employees: List<Employee> = emptyList(),
-    val cart: List<CartLine> = emptyList(),                 // for direct cash register
+    val cart: List<CartLine> = emptyList(),
     val activeEmployee: Employee? = null,
     val todayTotal: Double = 0.0,
     val todayCount: Int = 0,
     val openTabs: List<Tab> = emptyList(),
-    val workingTab: Tab? = null,                            // currently editing this tab
+    val workingTab: Tab? = null,
     val workingTabItems: List<TabItem> = emptyList(),
     val voidedTxs: List<Tx> = emptyList(),
     val cancelledTabs: List<Tab> = emptyList(),
     val voidedTabItems: List<TabItem> = emptyList(),
     val recentTxs: List<Tx> = emptyList(),
+    val completedTxs: List<Tx> = emptyList(),
+    val refundTxs: List<Tx> = emptyList(),
+    val activeEvent: Event? = null,
+    val allEvents: List<Event> = emptyList(),
+    val recentStockMovements: List<StockMovement> = emptyList(),
+    val pendingPayment: PendingPayment? = null,
+    val lastReceipt: ReceiptSummary? = null,
     val businessName: String = "BarPOS",
+    val businessAddress: String = "",
+    val businessPhone: String = "",
+    val businessTaxId: String = "",
+    val receiptFooter: String = "תודה ולהתראות!",
     val taxRatePct: Double = 17.0,
     val currencySymbol: String = "₪",
     val taxIncluded: Boolean = true,
+    val showClock: Boolean = true,
+    val defaultUnit: String = "יח׳",
+    val lowStockThreshold: Double = 5.0,
 )
 
 class PosViewModel(app: Application) : AndroidViewModel(app) {
     private val db = (app as BarPosApp).db
+    private val appContext = app
     private val _state = MutableStateFlow(PosState())
     val state: StateFlow<PosState> = _state
     private var workingTabJob: kotlinx.coroutines.Job? = null
@@ -206,6 +242,16 @@ class PosViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         viewModelScope.launch {
+            db.transactions().observeRefunds().collect { list ->
+                _state.update { it.copy(refundTxs = list) }
+            }
+        }
+        viewModelScope.launch {
+            db.transactions().observeCompleted(300).collect { list ->
+                _state.update { it.copy(completedTxs = list) }
+            }
+        }
+        viewModelScope.launch {
             db.tabs().observeCancelled().collect { list ->
                 _state.update { it.copy(cancelledTabs = list) }
             }
@@ -216,8 +262,23 @@ class PosViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         viewModelScope.launch {
-            db.transactions().observeRecent(200).collect { list ->
+            db.transactions().observeRecent(300).collect { list ->
                 _state.update { it.copy(recentTxs = list) }
+            }
+        }
+        viewModelScope.launch {
+            db.events().observeActive().collect { e ->
+                _state.update { it.copy(activeEvent = e) }
+            }
+        }
+        viewModelScope.launch {
+            db.events().observeAll(100).collect { list ->
+                _state.update { it.copy(allEvents = list) }
+            }
+        }
+        viewModelScope.launch {
+            db.stockMovements().observeRecent(200).collect { list ->
+                _state.update { it.copy(recentStockMovements = list) }
             }
         }
         viewModelScope.launch {
@@ -226,9 +287,16 @@ class PosViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update {
                     it.copy(
                         businessName = map[SettingKeys.BUSINESS_NAME] ?: "BarPOS",
+                        businessAddress = map[SettingKeys.BUSINESS_ADDRESS] ?: "",
+                        businessPhone = map[SettingKeys.BUSINESS_PHONE] ?: "",
+                        businessTaxId = map[SettingKeys.BUSINESS_TAX_ID] ?: "",
+                        receiptFooter = map[SettingKeys.RECEIPT_FOOTER] ?: "תודה ולהתראות!",
                         taxRatePct = (map[SettingKeys.TAX_RATE] ?: "17").toDoubleOrNull() ?: 17.0,
                         currencySymbol = map[SettingKeys.CURRENCY_SYMBOL] ?: "₪",
                         taxIncluded = (map[SettingKeys.TAX_INCLUDED] ?: "true") == "true",
+                        showClock = (map[SettingKeys.SHOW_CLOCK] ?: "true") == "true",
+                        defaultUnit = map[SettingKeys.DEFAULT_UNIT] ?: "יח׳",
+                        lowStockThreshold = (map[SettingKeys.LOW_STOCK_THRESHOLD] ?: "5").toDoubleOrNull() ?: 5.0,
                     )
                 }
             }
@@ -258,14 +326,15 @@ class PosViewModel(app: Application) : AndroidViewModel(app) {
                 cart = emptyList(),
                 workingTab = null,
                 workingTabItems = emptyList(),
+                pendingPayment = null,
+                lastReceipt = null,
             )
         }
     }
 
-    // ----- Cash register cart -----
+    // ----- Cart -----
 
     fun addToCart(item: Item) {
-        // If working on a tab, add to tab instead
         val tab = _state.value.workingTab
         if (tab != null) {
             viewModelScope.launch {
@@ -275,6 +344,16 @@ class PosViewModel(app: Application) : AndroidViewModel(app) {
                         priceAtTime = item.price, quantity = 1,
                     )
                 )
+                if (item.trackStock) {
+                    db.items().adjustStock(item.id, -1.0)
+                    db.stockMovements().insertMovement(
+                        StockMovement(
+                            itemId = item.id, itemName = item.name,
+                            change = -1.0, reason = "sale",
+                            employeeId = _state.value.activeEmployee?.id,
+                        )
+                    )
+                }
                 refreshWorkingTab()
             }
             return
@@ -294,25 +373,152 @@ class PosViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearCart() { _state.update { it.copy(cart = emptyList()) } }
 
-    fun checkoutCart(method: String) {
+    // ----- Payment flow (cart) -----
+
+    fun startCheckoutCart(method: String) {
         val cart = _state.value.cart
-        val emp = _state.value.activeEmployee ?: return
         if (cart.isEmpty()) return
-        val total = cart.sumOf { it.item.price * it.qty }
+        val subtotal = cart.sumOf { it.item.price * it.qty }
+        val (base, tax) = computeBaseAndTax(subtotal)
+        _state.update {
+            it.copy(pendingPayment = PendingPayment(
+                method = method, sourceKind = "cart",
+                baseSubtotal = base, tax = tax,
+            ))
+        }
+    }
+
+    fun startCheckoutTab(tabId: Long, method: String) {
         viewModelScope.launch {
-            val txId = db.transactions().insertTx(
-                Tx(total = total, paymentMethod = method, employeeId = emp.id)
+            val items = db.tabs().activeItemsFor(tabId)
+            if (items.isEmpty()) return@launch
+            val subtotal = items.sumOf { it.priceAtTime * it.quantity }
+            val (base, tax) = computeBaseAndTax(subtotal)
+            _state.update {
+                it.copy(pendingPayment = PendingPayment(
+                    method = method, sourceKind = "tab", sourceTabId = tabId,
+                    baseSubtotal = base, tax = tax,
+                ))
+            }
+        }
+    }
+
+    private fun computeBaseAndTax(subtotal: Double): Pair<Double, Double> {
+        // If tax included in prices, subtotal IS final. Tax is shown for informational purposes only.
+        // If tax NOT included, tax must be added on top.
+        val s = _state.value
+        return if (s.taxIncluded) {
+            subtotal to 0.0
+        } else {
+            subtotal to (subtotal * s.taxRatePct / 100.0)
+        }
+    }
+
+    fun updatePendingTip(tip: Double) {
+        val p = _state.value.pendingPayment ?: return
+        _state.update { it.copy(pendingPayment = p.copy(tip = tip)) }
+    }
+
+    fun updatePendingCash(amount: Double) {
+        val p = _state.value.pendingPayment ?: return
+        _state.update { it.copy(pendingPayment = p.copy(cashReceived = amount)) }
+    }
+
+    fun cancelPending() {
+        _state.update { it.copy(pendingPayment = null) }
+    }
+
+    fun confirmPending() {
+        val p = _state.value.pendingPayment ?: return
+        val emp = _state.value.activeEmployee ?: return
+        viewModelScope.launch {
+            val cashReceived = if (p.method == "cash") p.cashReceived else 0.0
+            val changeGiven = if (p.method == "cash") p.change else 0.0
+            val tx = Tx(
+                total = p.total,
+                subtotal = p.baseSubtotal,
+                tip = p.tip,
+                tax = p.tax,
+                paymentMethod = p.method,
+                cashReceived = cashReceived,
+                changeGiven = changeGiven,
+                employeeId = emp.id,
+                tabId = if (p.sourceKind == "tab") p.sourceTabId else null,
             )
-            db.transactions().insertItems(cart.map { line ->
-                TxItem(
-                    transactionId = txId, itemId = line.item.id,
-                    itemName = line.item.name, priceAtTime = line.item.price,
-                    quantity = line.qty,
+            val txId = db.transactions().insertTx(tx)
+            val lines: List<TxItem> = if (p.sourceKind == "cart") {
+                val cart = _state.value.cart
+                cart.map { line ->
+                    TxItem(
+                        transactionId = txId, itemId = line.item.id,
+                        itemName = line.item.name, priceAtTime = line.item.price,
+                        quantity = line.qty,
+                    )
+                }
+            } else {
+                val items = db.tabs().activeItemsFor(p.sourceTabId ?: -1)
+                items.map { it ->
+                    TxItem(
+                        transactionId = txId, itemId = it.itemId,
+                        itemName = it.itemName, priceAtTime = it.priceAtTime,
+                        quantity = it.quantity,
+                    )
+                }
+            }
+            db.transactions().insertItems(lines)
+            if (p.sourceKind == "tab" && p.sourceTabId != null) {
+                db.tabs().closeTab(p.sourceTabId, System.currentTimeMillis())
+            }
+            // For cart sales (not tab), deduct stock now
+            if (p.sourceKind == "cart") {
+                for (line in _state.value.cart) {
+                    if (line.item.trackStock) {
+                        db.items().adjustStock(line.item.id, -line.qty.toDouble())
+                        db.stockMovements().insertMovement(
+                            StockMovement(
+                                itemId = line.item.id, itemName = line.item.name,
+                                change = -line.qty.toDouble(), reason = "sale",
+                                employeeId = emp.id,
+                            )
+                        )
+                    }
+                }
+            }
+            val receipt = ReceiptSummary(
+                txId = txId,
+                subtotal = p.baseSubtotal, tax = p.tax, tip = p.tip, total = p.total,
+                paymentMethod = p.method,
+                cashReceived = cashReceived, changeGiven = changeGiven,
+                createdAt = tx.createdAt,
+                lines = lines,
+                employeeName = emp.name,
+            )
+            _state.update {
+                it.copy(
+                    pendingPayment = null,
+                    cart = if (p.sourceKind == "cart") emptyList() else it.cart,
+                    workingTab = if (p.sourceKind == "tab" && it.workingTab?.id == p.sourceTabId) null else it.workingTab,
+                    workingTabItems = if (p.sourceKind == "tab" && it.workingTab?.id == p.sourceTabId) emptyList() else it.workingTabItems,
+                    lastReceipt = receipt,
                 )
-            })
-            _state.update { it.copy(cart = emptyList()) }
+            }
             refreshTotals()
         }
+    }
+
+    fun dismissReceipt() {
+        _state.update { it.copy(lastReceipt = null) }
+    }
+
+    fun shareLastReceipt() {
+        val r = _state.value.lastReceipt ?: return
+        val s = _state.value
+        val uri = ReceiptUtil.generateReceiptPdf(
+            appContext, r, s.currencySymbol,
+            s.businessName, s.businessAddress, s.businessPhone, s.businessTaxId,
+            s.receiptFooter,
+        ) ?: return
+        ReceiptUtil.shareReceipt(appContext, uri)
     }
 
     // ----- Tabs -----
@@ -362,12 +568,47 @@ class PosViewModel(app: Application) : AndroidViewModel(app) {
     fun voidTabItem(itemId: Long, reason: String?) {
         viewModelScope.launch {
             db.tabs().voidItem(itemId, System.currentTimeMillis(), reason)
+            // Return stock back
+            val items = _state.value.workingTabItems
+            val voidedItem = items.firstOrNull { it.id == itemId }
+            if (voidedItem != null) {
+                val product = db.items().get(voidedItem.itemId)
+                if (product != null && product.trackStock) {
+                    db.items().adjustStock(product.id, voidedItem.quantity.toDouble())
+                    db.stockMovements().insertMovement(
+                        StockMovement(
+                            itemId = product.id, itemName = product.name,
+                            change = voidedItem.quantity.toDouble(),
+                            reason = "void",
+                            employeeId = _state.value.activeEmployee?.id,
+                            note = reason,
+                        )
+                    )
+                }
+            }
             refreshWorkingTab()
         }
     }
 
     fun cancelTab(tabId: Long, reason: String?) {
         viewModelScope.launch {
+            // Return stock for all active items
+            val activeItems = db.tabs().activeItemsFor(tabId)
+            for (ti in activeItems) {
+                val prod = db.items().get(ti.itemId)
+                if (prod != null && prod.trackStock) {
+                    db.items().adjustStock(prod.id, ti.quantity.toDouble())
+                    db.stockMovements().insertMovement(
+                        StockMovement(
+                            itemId = prod.id, itemName = prod.name,
+                            change = ti.quantity.toDouble(),
+                            reason = "void",
+                            employeeId = _state.value.activeEmployee?.id,
+                            note = reason,
+                        )
+                    )
+                }
+            }
             db.tabs().cancelTab(tabId, System.currentTimeMillis(), reason)
             if (_state.value.workingTab?.id == tabId) {
                 _state.update { it.copy(workingTab = null, workingTabItems = emptyList()) }
@@ -375,32 +616,7 @@ class PosViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun closeTab(tabId: Long, paymentMethod: String) {
-        val emp = _state.value.activeEmployee ?: return
-        viewModelScope.launch {
-            val items = db.tabs().activeItemsFor(tabId)
-            if (items.isEmpty()) return@launch
-            val total = items.sumOf { it.priceAtTime * it.quantity }
-            val txId = db.transactions().insertTx(
-                Tx(total = total, paymentMethod = paymentMethod,
-                   employeeId = emp.id, tabId = tabId)
-            )
-            db.transactions().insertItems(items.map { it ->
-                TxItem(
-                    transactionId = txId, itemId = it.itemId,
-                    itemName = it.itemName, priceAtTime = it.priceAtTime,
-                    quantity = it.quantity,
-                )
-            })
-            db.tabs().closeTab(tabId, System.currentTimeMillis())
-            if (_state.value.workingTab?.id == tabId) {
-                _state.update { it.copy(workingTab = null, workingTabItems = emptyList()) }
-            }
-            refreshTotals()
-        }
-    }
-
-    // ----- Voids -----
+    // ----- Voids / Refunds -----
 
     fun voidTransaction(txId: Long, reason: String) {
         viewModelScope.launch {
@@ -409,11 +625,59 @@ class PosViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun refundTransaction(originalTxId: Long, amount: Double, reason: String, method: String) {
+        val emp = _state.value.activeEmployee ?: return
+        viewModelScope.launch {
+            val original = db.transactions().get(originalTxId) ?: return@launch
+            val refundMethod = "refund_${method.ifBlank { original.paymentMethod }}"
+            val refundTx = Tx(
+                total = -amount,  // negative
+                subtotal = -amount,
+                tip = 0.0, tax = 0.0,
+                paymentMethod = refundMethod,
+                employeeId = emp.id,
+                tabId = original.tabId,
+                refundOfTxId = originalTxId,
+                refundReason = reason,
+            )
+            val rid = db.transactions().insertTx(refundTx)
+            // Copy original items (informational)
+            val origItems = db.transactions().itemsFor(originalTxId)
+            db.transactions().insertItems(origItems.map { ti ->
+                TxItem(
+                    transactionId = rid, itemId = ti.itemId,
+                    itemName = ti.itemName,
+                    priceAtTime = -ti.priceAtTime,
+                    quantity = ti.quantity,
+                )
+            })
+            refreshTotals()
+        }
+    }
+
     // ----- Admin -----
 
-    fun createItem(name: String, price: Double, category: String) {
+    fun createItem(
+        name: String, price: Double, category: String,
+        unit: String = "יח׳", trackStock: Boolean = false,
+        initialStock: Double = 0.0, lowStockThreshold: Double = 0.0,
+    ) {
         viewModelScope.launch {
-            db.items().insert(Item(name = name, price = price, category = category, active = true))
+            val id = db.items().insert(Item(
+                name = name, price = price, category = category, active = true,
+                unit = unit, trackStock = trackStock,
+                stockOnHand = initialStock, lowStockThreshold = lowStockThreshold,
+            ))
+            if (trackStock && initialStock > 0) {
+                db.stockMovements().insertMovement(
+                    StockMovement(
+                        itemId = id, itemName = name,
+                        change = initialStock, reason = "restock",
+                        note = "Initial stock",
+                        employeeId = _state.value.activeEmployee?.id,
+                    )
+                )
+            }
         }
     }
 
@@ -436,42 +700,111 @@ class PosViewModel(app: Application) : AndroidViewModel(app) {
 
     fun deleteEmployee(id: Long) { viewModelScope.launch { db.employees().softDelete(id) } }
 
-    fun saveBusinessSettings(name: String, taxPct: Double, currency: String, taxIncluded: Boolean) {
+    fun saveAllSettings(map: Map<String, String>) {
         viewModelScope.launch {
-            db.settings().put(Setting(SettingKeys.BUSINESS_NAME, name))
-            db.settings().put(Setting(SettingKeys.TAX_RATE, taxPct.toString()))
-            db.settings().put(Setting(SettingKeys.CURRENCY_SYMBOL, currency))
-            db.settings().put(Setting(SettingKeys.TAX_INCLUDED, taxIncluded.toString()))
+            map.forEach { (k, v) -> db.settings().put(Setting(k, v)) }
         }
     }
 
-    // ----- Sales report -----
+    // ----- Stock -----
+
+    fun restockItem(itemId: Long, qty: Double, note: String?) {
+        viewModelScope.launch {
+            val item = db.items().get(itemId) ?: return@launch
+            db.items().adjustStock(itemId, qty)
+            db.stockMovements().insertMovement(
+                StockMovement(
+                    itemId = itemId, itemName = item.name,
+                    change = qty, reason = "restock", note = note,
+                    employeeId = _state.value.activeEmployee?.id,
+                )
+            )
+        }
+    }
+
+    fun adjustStock(itemId: Long, newQty: Double, note: String?) {
+        viewModelScope.launch {
+            val item = db.items().get(itemId) ?: return@launch
+            val delta = newQty - item.stockOnHand
+            db.items().setStock(itemId, newQty)
+            db.stockMovements().insertMovement(
+                StockMovement(
+                    itemId = itemId, itemName = item.name,
+                    change = delta, reason = "adjust", note = note,
+                    employeeId = _state.value.activeEmployee?.id,
+                )
+            )
+        }
+    }
+
+    // ----- Events -----
+
+    fun startEvent(name: String, description: String?) {
+        val emp = _state.value.activeEmployee ?: return
+        viewModelScope.launch {
+            val active = db.events().get(_state.value.activeEvent?.id ?: -1)
+            if (active != null && active.status == "active") return@launch
+            val eventId = db.events().insert(
+                Event(name = name, description = description, createdByEmployeeId = emp.id)
+            )
+            // Snapshot current stock
+            val items = db.items().observeActive().let {
+                _state.value.items.filter { item -> item.active && item.trackStock }
+            }
+            for (item in items) {
+                db.events().insertSnapshot(EventStockSnapshot(
+                    eventId = eventId, itemId = item.id, itemName = item.name,
+                    unit = item.unit, initialQty = item.stockOnHand,
+                ))
+            }
+        }
+    }
+
+    fun endActiveEvent() {
+        val ev = _state.value.activeEvent ?: return
+        viewModelScope.launch {
+            db.events().endEvent(ev.id, System.currentTimeMillis())
+        }
+    }
+
+    // ----- Reports -----
 
     suspend fun salesInRange(sinceMs: Long, untilMs: Long): SalesReportData {
         val txs = db.transactions().listInRange(sinceMs, untilMs)
         val items = if (txs.isNotEmpty()) {
             db.transactions().itemsForAll(txs.map { it.id })
         } else emptyList()
-        val byEmp = txs.groupBy { it.employeeId }
+        val nonRefund = txs.filter { it.refundOfTxId == null }
+        val refunds = txs.filter { it.refundOfTxId != null }
+        val byEmp = nonRefund.groupBy { it.employeeId }
             .mapValues { e -> e.value.sumOf { it.total } }
-        val byMethod = txs.groupBy { it.paymentMethod }
+        val byMethod = nonRefund.groupBy { it.paymentMethod }
             .mapValues { e -> e.value.sumOf { it.total } }
-        val byCategory = items.groupBy { txItemCategory(it) }
+        val byCategory = items.filter { it.priceAtTime > 0 }
+            .groupBy { txItemCategory(it) }
             .mapValues { e -> e.value.sumOf { it.priceAtTime * it.quantity } }
-        val topItems = items.groupBy { it.itemName }
+        val topItems = items.filter { it.priceAtTime > 0 }
+            .groupBy { it.itemName }
             .map { (name, list) ->
                 Triple(name, list.sumOf { it.quantity },
                        list.sumOf { it.priceAtTime * it.quantity })
             }
             .sortedByDescending { it.third }
             .take(20)
+        val tipsTotal = nonRefund.sumOf { it.tip }
+        val tipsByEmp = nonRefund.groupBy { it.employeeId }
+            .mapValues { e -> e.value.sumOf { it.tip } }
         return SalesReportData(
-            txCount = txs.size,
-            totalSales = txs.sumOf { it.total },
+            txCount = nonRefund.size,
+            totalSales = nonRefund.sumOf { it.total },
+            totalTips = tipsTotal,
             byEmployee = byEmp,
             byMethod = byMethod,
             byCategory = byCategory,
             topItems = topItems,
+            tipsByEmployee = tipsByEmp,
+            refundsTotal = -refunds.sumOf { it.total },
+            refundsCount = refunds.size,
         )
     }
 
@@ -484,10 +817,14 @@ class PosViewModel(app: Application) : AndroidViewModel(app) {
 data class SalesReportData(
     val txCount: Int,
     val totalSales: Double,
+    val totalTips: Double,
     val byEmployee: Map<Long, Double>,
     val byMethod: Map<String, Double>,
     val byCategory: Map<String, Double>,
     val topItems: List<Triple<String, Int, Double>>,
+    val tipsByEmployee: Map<Long, Double>,
+    val refundsTotal: Double,
+    val refundsCount: Int,
 )
 
 // ============ Login ============
@@ -639,8 +976,15 @@ internal fun formatDate(ms: Long): String {
     return sdf.format(java.util.Date(ms))
 }
 
+internal fun currentTimeText(): String {
+    val sdf = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale("he", "IL"))
+    return sdf.format(java.util.Date())
+}
+
 internal fun paymentMethodLabel(method: String): String = when (method) {
     "cash" -> "מזומן"
     "credit" -> "אשראי"
-    else -> method
+    "refund_cash" -> "החזר מזומן"
+    "refund_credit" -> "החזר אשראי"
+    else -> if (method.startsWith("refund_")) "החזר ${method.substringAfter("refund_")}" else method
 }

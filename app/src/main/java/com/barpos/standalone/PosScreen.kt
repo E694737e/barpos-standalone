@@ -35,11 +35,9 @@ internal fun PosScreen(state: PosState, vm: PosViewModel) {
         if (category == null) activeItems else activeItems.filter { it.category == category }
     }
 
-    // Cart for direct cash register
     val cartTotal = state.cart.sumOf { it.item.price * it.qty }
     val cartCount = state.cart.sumOf { it.qty }
 
-    // If we're editing a tab, use tab items instead
     val workingTab = state.workingTab
     val tabItems = state.workingTabItems.filter { !it.voided }
     val tabTotal = tabItems.sumOf { it.priceAtTime * it.quantity }
@@ -53,10 +51,8 @@ internal fun PosScreen(state: PosState, vm: PosViewModel) {
     var confirmCancelTab by remember { mutableStateOf(false) }
 
     Row(Modifier.fillMaxSize()) {
-        // Items grid
         Column(Modifier.weight(1f).padding(12.dp)) {
 
-            // If we're working on a tab, show a banner
             if (onTab) {
                 Surface(
                     color = BlueBtn,
@@ -84,7 +80,6 @@ internal fun PosScreen(state: PosState, vm: PosViewModel) {
                 }
             }
 
-            // Categories
             Row(
                 modifier = Modifier
                     .horizontalScroll(rememberScrollState())
@@ -105,18 +100,20 @@ internal fun PosScreen(state: PosState, vm: PosViewModel) {
                 }
             }
 
-            // Items grid
             LazyVerticalGrid(
                 columns = GridCells.Adaptive(minSize = 140.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(visibleItems, key = { it.id }) { item ->
+                    val outOfStock = item.trackStock && item.stockOnHand <= 0
                     Card(
                         modifier = Modifier
                             .height(96.dp).fillMaxWidth()
-                            .clickable { vm.addToCart(item) },
-                        colors = CardDefaults.cardColors(containerColor = CardBg),
+                            .clickable(enabled = !outOfStock) { vm.addToCart(item) },
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (outOfStock) Bg else CardBg
+                        ),
                         shape = RoundedCornerShape(10.dp),
                     ) {
                         Column(
@@ -126,13 +123,23 @@ internal fun PosScreen(state: PosState, vm: PosViewModel) {
                         ) {
                             Text(
                                 item.name,
-                                color = Color.White, fontSize = 14.sp,
+                                color = if (outOfStock) Muted else Color.White, fontSize = 14.sp,
                                 textAlign = TextAlign.Center,
                                 fontWeight = FontWeight.Medium,
                             )
+                            if (item.trackStock) {
+                                Text(
+                                    if (outOfStock) "אזל" else "מלאי: ${trim(item.stockOnHand)} ${item.unit}",
+                                    color = if (outOfStock) Bad else
+                                            if (item.stockOnHand < item.lowStockThreshold) Warning
+                                            else Muted,
+                                    fontSize = 10.sp,
+                                )
+                            }
                             Text(
                                 formatMoney(item.price, state.currencySymbol),
-                                color = Accent, fontSize = 16.sp,
+                                color = if (outOfStock) Muted else Accent,
+                                fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold,
                             )
                         }
@@ -141,7 +148,6 @@ internal fun PosScreen(state: PosState, vm: PosViewModel) {
             }
         }
 
-        // Cart / Tab panel
         Column(
             Modifier
                 .width(360.dp).fillMaxHeight()
@@ -193,7 +199,6 @@ internal fun PosScreen(state: PosState, vm: PosViewModel) {
                 Text("פריטים", color = Muted)
                 Text("$countShown", color = Color.White)
             }
-            // If tax not included, show subtotal + tax
             if (!state.taxIncluded && totalShown > 0) {
                 val taxFraction = state.taxRatePct / 100.0
                 val taxAmount = totalShown * taxFraction
@@ -231,14 +236,13 @@ internal fun PosScreen(state: PosState, vm: PosViewModel) {
 
             Spacer(Modifier.height(10.dp))
 
-            // Action buttons
             if (onTab) {
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Button(
-                        onClick = { vm.closeTab(workingTab!!.id, "cash") },
+                        onClick = { vm.startCheckoutTab(workingTab!!.id, "cash") },
                         enabled = tabItems.isNotEmpty(),
                         colors = ButtonDefaults.buttonColors(containerColor = Good),
                         modifier = Modifier.weight(1f).height(56.dp),
@@ -248,7 +252,7 @@ internal fun PosScreen(state: PosState, vm: PosViewModel) {
                              fontSize = 14.sp, fontWeight = FontWeight.Bold)
                     }
                     Button(
-                        onClick = { vm.closeTab(workingTab!!.id, "credit") },
+                        onClick = { vm.startCheckoutTab(workingTab!!.id, "credit") },
                         enabled = tabItems.isNotEmpty(),
                         colors = ButtonDefaults.buttonColors(containerColor = BlueBtn),
                         modifier = Modifier.weight(1f).height(56.dp),
@@ -270,7 +274,7 @@ internal fun PosScreen(state: PosState, vm: PosViewModel) {
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Button(
-                        onClick = { vm.checkoutCart("cash") },
+                        onClick = { vm.startCheckoutCart("cash") },
                         enabled = state.cart.isNotEmpty(),
                         colors = ButtonDefaults.buttonColors(containerColor = Good),
                         modifier = Modifier.weight(1f).height(56.dp),
@@ -280,7 +284,7 @@ internal fun PosScreen(state: PosState, vm: PosViewModel) {
                              fontSize = 16.sp, fontWeight = FontWeight.Bold)
                     }
                     Button(
-                        onClick = { vm.checkoutCart("credit") },
+                        onClick = { vm.startCheckoutCart("credit") },
                         enabled = state.cart.isNotEmpty(),
                         colors = ButtonDefaults.buttonColors(containerColor = BlueBtn),
                         modifier = Modifier.weight(1f).height(56.dp),
@@ -299,6 +303,40 @@ internal fun PosScreen(state: PosState, vm: PosViewModel) {
                 ) { Text("נקה חשבון", color = Color.White) }
             }
         }
+    }
+
+    // Pending payment dialogs
+    val pending = state.pendingPayment
+    if (pending != null) {
+        if (pending.method == "cash") {
+            CashPaymentDialog(
+                pending = pending,
+                currency = state.currencySymbol,
+                onAmountChange = { vm.updatePendingCash(it) },
+                onTipChange = { vm.updatePendingTip(it) },
+                onConfirm = { vm.confirmPending() },
+                onDismiss = { vm.cancelPending() },
+            )
+        } else if (pending.method == "credit") {
+            CreditPaymentDialog(
+                pending = pending,
+                currency = state.currencySymbol,
+                onTipChange = { vm.updatePendingTip(it) },
+                onConfirm = { vm.confirmPending() },
+                onDismiss = { vm.cancelPending() },
+            )
+        }
+    }
+
+    // Receipt success
+    val lastReceipt = state.lastReceipt
+    if (lastReceipt != null) {
+        ReceiptSuccessDialog(
+            receipt = lastReceipt,
+            currency = state.currencySymbol,
+            onPrintShare = { vm.shareLastReceipt() },
+            onClose = { vm.dismissReceipt() },
+        )
     }
 
     if (voidDialogTabItem != null) {
@@ -399,3 +437,6 @@ internal fun VoidReasonDialog(
         dismissButton = { TextButton(onClick = onDismiss) { Text("ביטול") } },
     )
 }
+
+internal fun trim(d: Double): String =
+    if (d == d.toLong().toDouble()) d.toLong().toString() else "%.1f".format(d)
