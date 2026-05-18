@@ -35,16 +35,20 @@ data class Tx(
     val subtotal: Double = 0.0,         // amount before tip
     val tip: Double = 0.0,              // tip amount
     val tax: Double = 0.0,              // tax amount (if tax not included in prices)
-    val paymentMethod: String,
+    val paymentMethod: String,          // "cash" | "credit" | "split" | "refund_*"
     val cashReceived: Double = 0.0,     // for cash payments
     val changeGiven: Double = 0.0,
+    val splitCashAmount: Double = 0.0,  // for split: portion paid in cash (incl. share of tip)
+    val splitCreditAmount: Double = 0.0, // for split: portion paid in credit
+    val splitCashReceived: Double = 0.0, // for split: amount of cash physically received
+    val splitChangeGiven: Double = 0.0,
     val employeeId: Long,
     val createdAt: Long = System.currentTimeMillis(),
-    val status: String = "completed",   // completed | voided | refunded
+    val status: String = "completed",
     val voidedAt: Long? = null,
     val voidReason: String? = null,
     val tabId: Long? = null,
-    val refundOfTxId: Long? = null,     // if this Tx is a refund of another
+    val refundOfTxId: Long? = null,
     val refundReason: String? = null,
 )
 
@@ -337,7 +341,7 @@ interface EventDao {
         Tab::class, TabItem::class, Setting::class,
         StockMovement::class, Event::class, EventStockSnapshot::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {

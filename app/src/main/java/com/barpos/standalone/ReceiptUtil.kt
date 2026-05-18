@@ -199,8 +199,10 @@ object ReceiptUtil {
         val methodLabel = when (receipt.paymentMethod) {
             "cash" -> "מזומן"
             "credit" -> "אשראי"
+            "split" -> "פיצול (מזומן+אשראי)"
             "refund_cash" -> "החזר מזומן"
             "refund_credit" -> "החזר אשראי"
+            "refund_split" -> "החזר פיצול"
             else -> receipt.paymentMethod
         }
         drawKv(canvas, "תשלום", methodLabel,
@@ -214,6 +216,25 @@ object ReceiptUtil {
             drawKv(canvas, "עודף", formatMoneyShort(receipt.changeGiven, currency),
                    leftPad, width - rightPad, y, normalPaint, rightAlign)
             y += 12
+        } else if (receipt.paymentMethod == "split") {
+            drawKv(canvas, "  מזומן", formatMoneyShort(receipt.splitCashAmount, currency),
+                   leftPad, width - rightPad, y, normalPaint, rightAlign)
+            y += 12
+            drawKv(canvas, "  אשראי", formatMoneyShort(receipt.splitCreditAmount, currency),
+                   leftPad, width - rightPad, y, normalPaint, rightAlign)
+            y += 12
+            if (receipt.splitCashReceived > 0) {
+                drawKv(canvas, "  מזומן שהתקבל",
+                       formatMoneyShort(receipt.splitCashReceived, currency),
+                       leftPad, width - rightPad, y, normalPaint, rightAlign)
+                y += 12
+                if (receipt.splitChangeGiven > 0) {
+                    drawKv(canvas, "  עודף",
+                           formatMoneyShort(receipt.splitChangeGiven, currency),
+                           leftPad, width - rightPad, y, normalPaint, rightAlign)
+                    y += 12
+                }
+            }
         }
 
         y += 8

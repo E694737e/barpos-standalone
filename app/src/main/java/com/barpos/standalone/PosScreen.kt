@@ -263,6 +263,16 @@ internal fun PosScreen(state: PosState, vm: PosViewModel) {
                     }
                 }
                 Button(
+                    onClick = { vm.startCheckoutTab(workingTab!!.id, "split") },
+                    enabled = tabItems.isNotEmpty(),
+                    colors = ButtonDefaults.buttonColors(containerColor = Warning),
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp).height(48.dp),
+                    shape = RoundedCornerShape(10.dp),
+                ) {
+                    Text("סגור - פיצול תשלום", color = Color.White,
+                         fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                }
+                Button(
                     onClick = { confirmCancelTab = true },
                     colors = ButtonDefaults.buttonColors(containerColor = Bad),
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp).height(44.dp),
@@ -295,6 +305,16 @@ internal fun PosScreen(state: PosState, vm: PosViewModel) {
                     }
                 }
                 Button(
+                    onClick = { vm.startCheckoutCart("split") },
+                    enabled = state.cart.isNotEmpty(),
+                    colors = ButtonDefaults.buttonColors(containerColor = Warning),
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp).height(48.dp),
+                    shape = RoundedCornerShape(10.dp),
+                ) {
+                    Text("פיצול תשלום (מזומן + אשראי)", color = Color.White,
+                         fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                }
+                Button(
                     onClick = { vm.clearCart() },
                     enabled = state.cart.isNotEmpty(),
                     colors = ButtonDefaults.buttonColors(containerColor = CardBg),
@@ -308,8 +328,8 @@ internal fun PosScreen(state: PosState, vm: PosViewModel) {
     // Pending payment dialogs
     val pending = state.pendingPayment
     if (pending != null) {
-        if (pending.method == "cash") {
-            CashPaymentDialog(
+        when (pending.method) {
+            "cash" -> CashPaymentDialog(
                 pending = pending,
                 currency = state.currencySymbol,
                 onAmountChange = { vm.updatePendingCash(it) },
@@ -317,10 +337,18 @@ internal fun PosScreen(state: PosState, vm: PosViewModel) {
                 onConfirm = { vm.confirmPending() },
                 onDismiss = { vm.cancelPending() },
             )
-        } else if (pending.method == "credit") {
-            CreditPaymentDialog(
+            "credit" -> CreditPaymentDialog(
                 pending = pending,
                 currency = state.currencySymbol,
+                onTipChange = { vm.updatePendingTip(it) },
+                onConfirm = { vm.confirmPending() },
+                onDismiss = { vm.cancelPending() },
+            )
+            "split" -> SplitPaymentDialog(
+                pending = pending,
+                currency = state.currencySymbol,
+                onSplitChange = { c, cr -> vm.updatePendingSplit(c, cr) },
+                onCashReceivedChange = { vm.updatePendingSplitCashReceived(it) },
                 onTipChange = { vm.updatePendingTip(it) },
                 onConfirm = { vm.confirmPending() },
                 onDismiss = { vm.cancelPending() },

@@ -424,6 +424,19 @@ class PosViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(pendingPayment = p.copy(cashReceived = amount)) }
     }
 
+    fun updatePendingSplit(cashAmount: Double, creditAmount: Double) {
+        val p = _state.value.pendingPayment ?: return
+        _state.update { it.copy(pendingPayment = p.copy(
+            splitCashAmount = cashAmount,
+            splitCreditAmount = creditAmount,
+        )) }
+    }
+
+    fun updatePendingSplitCashReceived(amount: Double) {
+        val p = _state.value.pendingPayment ?: return
+        _state.update { it.copy(pendingPayment = p.copy(splitCashReceived = amount)) }
+    }
+
     fun cancelPending() {
         _state.update { it.copy(pendingPayment = null) }
     }
@@ -434,6 +447,10 @@ class PosViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val cashReceived = if (p.method == "cash") p.cashReceived else 0.0
             val changeGiven = if (p.method == "cash") p.change else 0.0
+            val splitCash = if (p.method == "split") p.splitCashAmount else 0.0
+            val splitCredit = if (p.method == "split") p.splitCreditAmount else 0.0
+            val splitCashReceived = if (p.method == "split") p.splitCashReceived else 0.0
+            val splitChangeGiven = if (p.method == "split") p.splitChange else 0.0
             val tx = Tx(
                 total = p.total,
                 subtotal = p.baseSubtotal,
@@ -442,6 +459,10 @@ class PosViewModel(app: Application) : AndroidViewModel(app) {
                 paymentMethod = p.method,
                 cashReceived = cashReceived,
                 changeGiven = changeGiven,
+                splitCashAmount = splitCash,
+                splitCreditAmount = splitCredit,
+                splitCashReceived = splitCashReceived,
+                splitChangeGiven = splitChangeGiven,
                 employeeId = emp.id,
                 tabId = if (p.sourceKind == "tab") p.sourceTabId else null,
             )
@@ -489,6 +510,9 @@ class PosViewModel(app: Application) : AndroidViewModel(app) {
                 subtotal = p.baseSubtotal, tax = p.tax, tip = p.tip, total = p.total,
                 paymentMethod = p.method,
                 cashReceived = cashReceived, changeGiven = changeGiven,
+                splitCashAmount = splitCash, splitCreditAmount = splitCredit,
+                splitCashReceived = splitCashReceived,
+                splitChangeGiven = splitChangeGiven,
                 createdAt = tx.createdAt,
                 lines = lines,
                 employeeName = emp.name,
@@ -778,8 +802,16 @@ class PosViewModel(app: Application) : AndroidViewModel(app) {
         val refunds = txs.filter { it.refundOfTxId != null }
         val byEmp = nonRefund.groupBy { it.employeeId }
             .mapValues { e -> e.value.sumOf { it.total } }
-        val byMethod = nonRefund.groupBy { it.paymentMethod }
-            .mapValues { e -> e.value.sumOf { it.total } }
+        // For "split" transactions: attribute splitCashAmount to "cash" and splitCreditAmount to "credit"
+        val byMethod = mutableMapOf<String, Double>()
+        for (tx in nonRefund) {
+            if (tx.paymentMethod == "split") {
+                byMethod["cash"] = (byMethod["cash"] ?: 0.0) + tx.splitCashAmount
+                byMethod["credit"] = (byMethod["credit"] ?: 0.0) + tx.splitCreditAmount
+            } else {
+                byMethod[tx.paymentMethod] = (byMethod[tx.paymentMethod] ?: 0.0) + tx.total
+            }
+        }
         val byCategory = items.filter { it.priceAtTime > 0 }
             .groupBy { txItemCategory(it) }
             .mapValues { e -> e.value.sumOf { it.priceAtTime * it.quantity } }
@@ -984,7 +1016,9 @@ internal fun currentTimeText(): String {
 internal fun paymentMethodLabel(method: String): String = when (method) {
     "cash" -> "מזומן"
     "credit" -> "אשראי"
+    "split" -> "פיצול (מזומן+אשראי)"
     "refund_cash" -> "החזר מזומן"
     "refund_credit" -> "החזר אשראי"
+    "refund_split" -> "החזר פיצול"
     else -> if (method.startsWith("refund_")) "החזר ${method.substringAfter("refund_")}" else method
 }
