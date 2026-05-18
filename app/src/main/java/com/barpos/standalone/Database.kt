@@ -72,6 +72,7 @@ data class Tab(
     val status: String = "open",
     val cancelReason: String? = null,
     val createdByEmployeeId: Long,
+    val tableNumber: Int? = null,
 )
 
 @Entity(tableName = "tab_items")
@@ -341,7 +342,7 @@ interface EventDao {
         Tab::class, TabItem::class, Setting::class,
         StockMovement::class, Event::class, EventStockSnapshot::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -385,4 +386,5 @@ object SettingKeys {
     const val RECEIPT_FOOTER = "receipt_footer"
     const val DEFAULT_UNIT = "default_unit"
     const val LOW_STOCK_THRESHOLD = "low_stock_threshold"
+    const val TABLE_COUNT = "table_count"
 }

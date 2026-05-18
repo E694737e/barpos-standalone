@@ -61,6 +61,7 @@ class BarPosApp : Application() {
             db.settings().put(Setting(SettingKeys.RECEIPT_FOOTER, "תודה ולהתראות!"))
             db.settings().put(Setting(SettingKeys.DEFAULT_UNIT, "יח׳"))
             db.settings().put(Setting(SettingKeys.LOW_STOCK_THRESHOLD, "5"))
+            db.settings().put(Setting(SettingKeys.TABLE_COUNT, "12"))
         }
     }
 }

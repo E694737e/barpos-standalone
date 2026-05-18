@@ -72,6 +72,7 @@ class MainActivity : ComponentActivity() {
 
 internal enum class TopTab(val title: String, val managerOnly: Boolean = false) {
     Pos("קופה"),
+    Tables("שולחנות"),
     Tabs("חשבונות"),
     Voids("ביטולים"),
     Refunds("זיכויים"),
@@ -157,6 +158,10 @@ private fun AppRoot() {
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (topTab) {
                     TopTab.Pos   -> PosScreen(state = state, vm = vm)
+                    TopTab.Tables -> TablesScreen(state = state, openTable = { tableNum ->
+                        vm.openOrCreateTableTab(tableNum)
+                        topTab = TopTab.Pos
+                    })
                     TopTab.Tabs  -> TabsScreen(state = state, vm = vm, openTab = { tabId ->
                         if (state.workingTab?.id != tabId) {
                             vm.openTabForEditing(tabId)
@@ -211,6 +216,7 @@ data class PosState(
     val showClock: Boolean = true,
     val defaultUnit: String = "יח׳",
     val lowStockThreshold: Double = 5.0,
+    val tableCount: Int = 12,
 )
 
 class PosViewModel(app: Application) : AndroidViewModel(app) {
@@ -297,6 +303,7 @@ class PosViewModel(app: Application) : AndroidViewModel(app) {
                         showClock = (map[SettingKeys.SHOW_CLOCK] ?: "true") == "true",
                         defaultUnit = map[SettingKeys.DEFAULT_UNIT] ?: "יח׳",
                         lowStockThreshold = (map[SettingKeys.LOW_STOCK_THRESHOLD] ?: "5").toDoubleOrNull() ?: 5.0,
+                        tableCount = (map[SettingKeys.TABLE_COUNT] ?: "12").toIntOrNull() ?: 12,
                     )
                 }
             }
@@ -573,6 +580,26 @@ class PosViewModel(app: Application) : AndroidViewModel(app) {
         val tab = _state.value.workingTab ?: return
         val items = db.tabs().activeItemsFor(tab.id)
         _state.update { it.copy(workingTabItems = items) }
+    }
+
+    fun openOrCreateTableTab(tableNumber: Int) {
+        val emp = _state.value.activeEmployee ?: return
+        viewModelScope.launch {
+            // Check if there's already an open tab for this table
+            val existing = _state.value.openTabs.firstOrNull { it.tableNumber == tableNumber }
+            if (existing != null) {
+                openTabForEditing(existing.id)
+            } else {
+                val id = db.tabs().insert(
+                    Tab(
+                        name = "שולחן $tableNumber",
+                        tableNumber = tableNumber,
+                        createdByEmployeeId = emp.id,
+                    )
+                )
+                openTabForEditing(id)
+            }
+        }
     }
 
     fun createTab(name: String, customerName: String?) {

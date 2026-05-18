@@ -265,6 +265,9 @@ private fun SystemSettingsTab(state: PosState, vm: PosViewModel) {
     var lowStock by remember(state.lowStockThreshold) {
         mutableStateOf(state.lowStockThreshold.toString())
     }
+    var tableCount by remember(state.tableCount) {
+        mutableStateOf(state.tableCount.toString())
+    }
     var saved by remember { mutableStateOf(false) }
 
     Column(
@@ -289,9 +292,19 @@ private fun SystemSettingsTab(state: PosState, vm: PosViewModel) {
                               singleLine = true, modifier = Modifier.fillMaxWidth())
         }
         Spacer(Modifier.height(12.dp))
+        SettingsCard("שולחנות") {
+            OutlinedTextField(tableCount, { tableCount = it; saved = false },
+                              label = { Text("מספר שולחנות בעסק") },
+                              keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                              singleLine = true, modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(4.dp))
+            Text("ייצור גריד של שולחנות בכרטיסיית \"שולחנות\". כל שולחן עם מספר.",
+                 color = Muted, fontSize = 12.sp)
+        }
+        Spacer(Modifier.height(12.dp))
         SettingsCard("גרסה ותחזוקה") {
-            Text("גרסה: 2.0.0", color = Color.White, fontSize = 13.sp)
-            Text("בסיס נתונים: גרסה 3", color = Muted, fontSize = 12.sp)
+            Text("גרסה: 2.1.0", color = Color.White, fontSize = 13.sp)
+            Text("בסיס נתונים: גרסה 5", color = Muted, fontSize = 12.sp)
             Text("מסלול נתונים: אחסון פנימי של האפליקציה",
                  color = Muted, fontSize = 12.sp)
         }
@@ -303,6 +316,7 @@ private fun SystemSettingsTab(state: PosState, vm: PosViewModel) {
                         SettingKeys.SHOW_CLOCK to showClock.toString(),
                         SettingKeys.DEFAULT_UNIT to defaultUnit.ifBlank { "יח׳" },
                         SettingKeys.LOW_STOCK_THRESHOLD to (lowStock.toDoubleOrNull() ?: 5.0).toString(),
+                        SettingKeys.TABLE_COUNT to (tableCount.toIntOrNull() ?: 12).toString(),
                     ))
                     saved = true
                 },
